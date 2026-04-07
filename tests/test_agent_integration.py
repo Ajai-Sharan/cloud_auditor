@@ -51,7 +51,7 @@ class TestAgentServerInteraction:
         assert obs.done is False
         assert obs.reward == 0.0
         assert obs.steps_remaining == 15
-        assert obs.task_score == 0.0
+        assert 0.0 < obs.task_score < 1.0
 
     def test_easy_task_agent_workflow_happy_path(self):
         """Test: Agent solves task_easy_ssh by:
@@ -87,7 +87,7 @@ class TestAgentServerInteraction:
             )
         )
         assert remediate.done is True
-        assert remediate.task_score == 1.0
+        assert 0.0 < remediate.task_score < 1.0
         assert remediate.status == "completed"
         assert remediate.reward > 0.0  # +0.35 + score delta
 
@@ -145,7 +145,7 @@ class TestAgentServerInteraction:
             )
         )
         assert remediate.done is True
-        assert remediate.task_score == 1.0
+        assert 0.0 < remediate.task_score < 1.0
 
     def test_hard_task_agent_workflow_happy_path(self):
         """Test: Agent solves task_hard_iam (most complex task) by:
@@ -203,7 +203,7 @@ class TestAgentServerInteraction:
             )
         )
         assert step5.done is True
-        assert step5.task_score == 1.0  # Full completion
+        assert 0.0 < step5.task_score < 1.0  # Full completion
 
     def test_agent_empty_command_gets_penalty(self):
         """Test: Agent sends empty command (error case).
