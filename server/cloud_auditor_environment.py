@@ -203,10 +203,9 @@ class CloudAuditorEnvironment(Environment):
         score_delta = score - previous_score
         reward = reward_so_far + (0.8 * score_delta)
 
-        done = False
-        if score >= 1.0:
+        done = self._is_task_complete()
+        if done:
             reward += self._award_once("task_completed", 0.15)
-            done = True
         elif self._state.step_count >= self.MAX_STEPS:
             done = True
 
@@ -225,7 +224,7 @@ class CloudAuditorEnvironment(Environment):
         score = self._grade_current_task()
         status = "running"
         if done:
-            status = "completed" if score >= 1.0 else "failed"
+            status = "completed" if self._is_task_complete() else "failed"
 
         return CloudAuditorObservation(
             task_id=self._current_task_id,
@@ -288,31 +287,68 @@ class CloudAuditorEnvironment(Environment):
         return 0.0
 
     def _grade_easy_ssh(self) -> float:
-        sg = self._world_state["security_groups"].get("sg-web")
-        if not sg:
-            return 0.0
-        for rule in sg["ingress"]:
-            if rule["port"] == 22 and rule["cidr"] == "0.0.0.0/0":
-                return 0.0
-        return 1.0
+        if self._is_easy_ssh_complete():
+            return 0.95
+
+        if "easy_identified_target_sg" in self._progress_flags:
+            return 0.70
+        if "easy_used_describe_instances" in self._progress_flags:
+            return 0.40
+        return 0.10
 
     def _grade_medium_s3(self) -> float:
-        for bucket in self._world_state["s3_buckets"]:
-            if bucket["name"] == "customer-backup-prod":
-                return 1.0 if not bucket["public_read"] else 0.0
-        return 0.0
+        if self._is_medium_s3_complete():
+            return 0.95
+
+        if "medium_found_target_bucket" in self._progress_flags:
+            return 0.40
+        return 0.10
 
     def _grade_hard_iam(self) -> float:
+        if self._is_hard_iam_complete():
+            return 0.95
+
+        inactive_count = self._hard_iam_inactive_key_count()
+        if inactive_count >= 1:
+            return 0.80 if inactive_count == 1 else 0.90
+        if "hard_listed_target_keys" in self._progress_flags:
+            return 0.65
+        if "hard_identified_admin_user" in self._progress_flags:
+            return 0.45
+        if "hard_used_describe_iam_users" in self._progress_flags:
+            return 0.25
+        return 0.10
+
+    def _is_task_complete(self) -> bool:
+        if self._current_task_id == "task_easy_ssh":
+            return self._is_easy_ssh_complete()
+        if self._current_task_id == "task_medium_s3":
+            return self._is_medium_s3_complete()
+        if self._current_task_id == "task_hard_iam":
+            return self._is_hard_iam_complete()
+        return False
+
+    def _is_easy_ssh_complete(self) -> bool:
+        sg = self._world_state["security_groups"].get("sg-web")
+        if not sg:
+            return False
+        for rule in sg["ingress"]:
+            if rule["port"] == 22 and rule["cidr"] == "0.0.0.0/0":
+                return False
+        return True
+
+    def _is_medium_s3_complete(self) -> bool:
+        bucket = self._get_bucket("customer-backup-prod")
+        return bool(bucket) and not bucket["public_read"]
+
+    def _hard_iam_inactive_key_count(self) -> int:
         user = self._get_iam_user("alice-admin")
         if not user:
-            return 0.0
-        active_keys = [k for k in user["access_keys"] if k["status"] == "Active"]
-        if not active_keys:
-            return 1.0
-        inactive_count = len(user["access_keys"]) - len(active_keys)
-        if inactive_count <= 0:
-            return 0.0
-        return round(inactive_count / len(user["access_keys"]), 2)
+            return 0
+        return sum(1 for key in user["access_keys"] if key["status"] == "Inactive")
+
+    def _is_hard_iam_complete(self) -> bool:
+        return self._hard_iam_inactive_key_count() == 2
 
     def _parse_command(self, command_text: str) -> tuple[str, dict[str, str], str | None]:
         try:
