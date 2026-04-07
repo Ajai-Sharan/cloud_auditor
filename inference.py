@@ -57,6 +57,25 @@ SYSTEM_PROMPT = (
 )
 
 
+def emit_start(task_id: str, goal: str) -> None:
+    print(f"[START] task={task_id} goal={goal}", flush=True)
+
+
+def emit_step(step_num: int, command: str, reward: float, score: float, done: bool) -> None:
+    print(
+        f"[STEP] step={step_num} cmd={command} reward={reward:+.2f} "
+        f"score={score:.2f} done={done}",
+        flush=True,
+    )
+
+
+def emit_end(task_id: str, score: float, status: str, done: bool, steps: int) -> None:
+    print(
+        f"[END] task={task_id} score={score:.2f} status={status} done={done} steps={steps}",
+        flush=True,
+    )
+
+
 @dataclass
 class StepResponse:
     task_id: str
@@ -248,7 +267,12 @@ def fallback_policy(task_id: str, step_num: int) -> str:
 
 
 def main() -> None:
-    require_env()
+    try:
+        require_env()
+    except Exception as exc:  # noqa: BLE001
+        emit_start("init_error", "validate_env")
+        emit_end("init_error", 0.0, f"error:{exc}", True, 0)
+        return
 
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
@@ -271,17 +295,13 @@ def main() -> None:
                 time.sleep(RESET_RETRY_DELAY)
 
     if result is None:
-        print(
-            "[END] Unable to initialize environment after retries. "
-            f"Last error: {reset_error}"
-        )
+        emit_start("reset_error", "initialize_environment")
+        emit_end("reset_error", 0.0, f"error:{reset_error}", True, 0)
         return
 
     history: list[str] = []
 
-    print("[START]")
-    print(f"Task: {result.task_id}")
-    print(f"Goal: {result.task_description}")
+    emit_start(result.task_id, result.task_description)
 
     for step_num in range(1, MAX_STEPS + 1):
         if result.done:
@@ -325,10 +345,7 @@ def main() -> None:
             result = to_step_response(step_raw)
         except Exception as exc:  # noqa: BLE001
             print(f"[WARN] /step failed at step {step_num}: {exc}")
-            print(
-                f"[END] task_id={result.task_id} score={result.task_score:.2f} "
-                f"status={result.status} done={result.done}"
-            )
+            emit_end(result.task_id, result.task_score, result.status, result.done, step_num - 1)
             return
 
         line = (
@@ -336,7 +353,7 @@ def main() -> None:
             f"score={result.task_score:.2f} done={result.done}"
         )
         history.append(line)
-        print(f"[STEP] {line}")
+        emit_step(step_num, command, result.reward, result.task_score, result.done)
 
         if result.done:
             print("Episode complete.")
@@ -344,16 +361,14 @@ def main() -> None:
     else:
         print(f"Reached max steps ({MAX_STEPS}).")
 
-    print(
-        f"[END] task_id={result.task_id} score={result.task_score:.2f} "
-        f"status={result.status} done={result.done}"
-    )
+    emit_end(result.task_id, result.task_score, result.status, result.done, len(history))
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as err:  # noqa: BLE001
-        print(f"Fatal: {err}")
+        emit_start("fatal_error", "run_inference")
+        emit_end("fatal_error", 0.0, f"error:{err}", True, 0)
         # Keep exit status zero so validator sees graceful handling instead of crash.
         sys.exit(0)
