@@ -1,11 +1,10 @@
 """Inference script for CloudSecurityAuditor-v1.
 
-Required environment variables:
-- API_KEY: Credential for the injected LLM proxy
-
-Variables with defaults:
-- API_BASE_URL: The API endpoint for the LLM
-- MODEL_NAME: The model identifier for inference
+Mandatory environment variables before submission:
+- API_BASE_URL
+- MODEL_NAME
+- HF_TOKEN
+- LOCAL_IMAGE_NAME (only required when using from_docker_image workflows)
 
 This script uses OpenAI Client for all LLM calls and interacts with the
 local CloudSecurityAuditor HTTP API.
@@ -24,9 +23,11 @@ from urllib.request import Request, urlopen
 
 from openai import OpenAI
 
-API_BASE_URL = os.getenv("API_BASE_URL") 
-MODEL_NAME = os.getenv("MODEL_NAME")
-API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN") 
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+HF_TOKEN = os.getenv("HF_TOKEN")
+API_KEY = HF_TOKEN or os.getenv("API_KEY")
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
 ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://127.0.0.1:8000")
 MAX_STEPS = int(os.getenv("MAX_STEPS", "8"))
@@ -39,6 +40,7 @@ FALLBACK_ACTION = "__fallback__"
 ACTION_PREFIX_RE = re.compile(r"^(action|next action)\s*[:\-]\s*", re.IGNORECASE)
 COMMAND_HEAD_RE = re.compile(r"^[a-z_]+")
 KV_RE = re.compile(r"([a-zA-Z_\-]+)\s*=\s*\"?([^\"\s]+)\"?")
+ERROR_PREFIX = "Error:"
 
 SUPPORTED_COMMANDS = [
     "describe_instances",
@@ -58,22 +60,26 @@ SYSTEM_PROMPT = (
     "Use only supported commands."
 )
 
-
-def emit_start(task_id: str, goal: str) -> None:
-    print(f"[START] task={task_id} goal={goal}", flush=True)
+BENCHMARK = os.getenv("BENCHMARK", "cloudsecurityauditor-v1")
 
 
-def emit_step(step_num: int, command: str, reward: float, score: float, done: bool) -> None:
+def emit_start(task: str, env_name: str, model: str) -> None:
+    print(f"[START] task={task} env={env_name} model={model}", flush=True)
+
+
+def emit_step(step_num: int, action: str, reward: float, done: bool, error: str | None) -> None:
+    error_val = error if error is not None else "null"
     print(
-        f"[STEP] step={step_num} cmd={command} reward={reward:+.2f} "
-        f"score={score:.2f} done={done}",
+        f"[STEP] step={step_num} action={action} reward={reward:.2f} "
+        f"done={str(done).lower()} error={error_val}",
         flush=True,
     )
 
 
-def emit_end(task_id: str, score: float, status: str, done: bool, steps: int) -> None:
+def emit_end(success: bool, steps: int, score: float, rewards: list[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
-        f"[END] task={task_id} score={score:.2f} status={status} done={done} steps={steps}",
+        f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}",
         flush=True,
     )
 
@@ -96,8 +102,8 @@ def require_env() -> None:
         missing.append("API_BASE_URL")
     if not MODEL_NAME:
         missing.append("MODEL_NAME")
-    if not API_KEY:
-        missing.append("API_KEY")
+    if not HF_TOKEN:
+        missing.append("HF_TOKEN")
     if missing:
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
@@ -268,109 +274,107 @@ def fallback_policy(task_id: str, step_num: int) -> str:
     return "describe_instances"
 
 
+def extract_last_action_error(command_output: str) -> str | None:
+    if command_output.startswith(ERROR_PREFIX):
+        return command_output[len(ERROR_PREFIX) :].strip() or command_output.strip()
+    return None
+
+
 def main() -> None:
+    task_name = os.getenv("TASK_NAME", "unknown")
+    history: list[str] = []
+    rewards: list[float] = []
+    steps_taken = 0
+    score = 0.0
+    success = False
+    started = False
+
     try:
         require_env()
-    except Exception as exc:  # noqa: BLE001
-        emit_start("init_error", "validate_env")
-        emit_end("init_error", 0.0, f"error:{exc}", True, 0)
-        return
+        client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+        reset_error: Exception | None = None
+        result: StepResponse | None = None
+        for attempt in range(1, RESET_RETRIES + 1):
+            try:
+                reset_raw = http_post("/reset", {})
+                result = to_step_response(reset_raw)
+                task_name = result.task_id or task_name
+                emit_start(task=task_name, env_name=BENCHMARK, model=MODEL_NAME)
+                started = True
+                reset_error = None
+                break
+            except Exception as exc:  # noqa: BLE001
+                reset_error = exc
+                if attempt < RESET_RETRIES:
+                    import time
 
-    reset_error: Exception | None = None
-    result: StepResponse | None = None
-    for attempt in range(1, RESET_RETRIES + 1):
-        try:
-            reset_raw = http_post("/reset", {})
-            result = to_step_response(reset_raw)
-            reset_error = None
-            break
-        except Exception as exc:  # noqa: BLE001
-            reset_error = exc
-            print(
-                f"[WARN] /reset failed (attempt {attempt}/{RESET_RETRIES}): {exc}"
+                    time.sleep(RESET_RETRY_DELAY)
+
+        if result is None:
+            raise RuntimeError(f"/reset failed: {reset_error}")
+
+        for step_num in range(1, MAX_STEPS + 1):
+            if result.done:
+                break
+
+            user_prompt = (
+                f"Task ID: {result.task_id}\n"
+                f"Task Description: {result.task_description}\n"
+                f"Last command output:\n{result.command_output[:3500]}\n"
+                f"Steps remaining: {result.steps_remaining}\n"
+                f"History:\n" + ("\n".join(history[-4:]) if history else "None") + "\n"
+                f"Supported commands: {', '.join(SUPPORTED_COMMANDS)}\n"
+                "Return exactly one command."
             )
-            if attempt < RESET_RETRIES:
-                import time
 
-                time.sleep(RESET_RETRY_DELAY)
+            command = FALLBACK_ACTION
+            try:
+                completion = client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=TEMPERATURE,
+                    max_tokens=MAX_TOKENS,
+                    stream=False,
+                )
+                response_text = extract_text_content(completion.choices[0].message.content)
+                command = parse_model_command(response_text)
+            except Exception:  # noqa: BLE001
+                command = FALLBACK_ACTION
 
-    if result is None:
-        emit_start("reset_error", "initialize_environment")
-        emit_end("reset_error", 0.0, f"error:{reset_error}", True, 0)
-        return
+            if not command or command == FALLBACK_ACTION:
+                command = fallback_policy(result.task_id, step_num)
 
-    history: list[str] = []
-
-    emit_start(result.task_id, result.task_description)
-
-    for step_num in range(1, MAX_STEPS + 1):
-        if result.done:
-            print("Environment signalled done. Stopping early.")
-            break
-
-        user_prompt = (
-            f"Task ID: {result.task_id}\n"
-            f"Task Description: {result.task_description}\n"
-            f"Last command output:\n{result.command_output[:3500]}\n"
-            f"Steps remaining: {result.steps_remaining}\n"
-            f"History:\n" + ("\n".join(history[-4:]) if history else "None") + "\n"
-            f"Supported commands: {', '.join(SUPPORTED_COMMANDS)}\n"
-            "Return exactly one command."
-        )
-
-        command = FALLBACK_ACTION
-        try:
-            completion = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=TEMPERATURE,
-                max_tokens=MAX_TOKENS,
-                stream=False,
-            )
-            response_text = extract_text_content(completion.choices[0].message.content)
-            command = parse_model_command(response_text)
-        except Exception as exc:  # noqa: BLE001
-            print(f"LLM call failed ({exc}). Using fallback action.")
-
-        if not command or command == FALLBACK_ACTION:
-            command = fallback_policy(result.task_id, step_num)
-
-        print(f"Step {step_num}: model command -> {command}")
-
-        try:
             step_raw = http_post("/step", {"action": {"command": command}})
             result = to_step_response(step_raw)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[WARN] /step failed at step {step_num}: {exc}")
-            emit_end(result.task_id, result.task_score, result.status, result.done, step_num - 1)
-            return
 
-        line = (
-            f"step={step_num} cmd={command} reward={result.reward:+.2f} "
-            f"score={result.task_score:.2f} done={result.done}"
-        )
-        history.append(line)
-        emit_step(step_num, command, result.reward, result.task_score, result.done)
+            reward = result.reward
+            error = extract_last_action_error(result.command_output)
 
-        if result.done:
-            print("Episode complete.")
-            break
-    else:
-        print(f"Reached max steps ({MAX_STEPS}).")
+            rewards.append(reward)
+            steps_taken = step_num
+            score = min(max(result.task_score, 0.0), 1.0)
+            success = bool(result.done and score > 0.0)
 
-    emit_end(result.task_id, result.task_score, result.status, result.done, len(history))
+            emit_step(step_num=step_num, action=command, reward=reward, done=result.done, error=error)
+            history.append(f"step={step_num} action={command} reward={reward:.2f}")
+
+            if result.done:
+                break
+
+    except Exception:
+        success = False
+    finally:
+        if not started:
+            emit_start(task=task_name, env_name=BENCHMARK, model=MODEL_NAME)
+        emit_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 
 if __name__ == "__main__":
     try:
         main()
-    except Exception as err:  # noqa: BLE001
-        emit_start("fatal_error", "run_inference")
-        emit_end("fatal_error", 0.0, f"error:{err}", True, 0)
-        # Keep exit status zero so validator sees graceful handling instead of crash.
+    except Exception:
         sys.exit(0)
