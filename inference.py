@@ -26,8 +26,7 @@ from openai import OpenAI
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
-HF_TOKEN = os.getenv("HF_TOKEN")
-API_KEY = os.getenv("API_KEY")
+API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN") 
 
 ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://127.0.0.1:8000")
 MAX_STEPS = int(os.getenv("MAX_STEPS", "8"))
@@ -277,7 +276,7 @@ def main() -> None:
         emit_end("init_error", 0.0, f"error:{exc}", True, 0)
         return
 
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY or HF_TOKEN)
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
     reset_error: Exception | None = None
     result: StepResponse | None = None
