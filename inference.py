@@ -2,8 +2,8 @@
 
 Mandatory environment variables before submission:
 - API_BASE_URL
+- API_KEY
 - MODEL_NAME
-- HF_TOKEN
 - LOCAL_IMAGE_NAME (only required when using from_docker_image workflows)
 
 This script uses OpenAI Client for all LLM calls and interacts with the
@@ -23,10 +23,9 @@ from urllib.request import Request, urlopen
 
 from openai import OpenAI
 
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
-HF_TOKEN = os.getenv("HF_TOKEN")
-API_KEY = HF_TOKEN or os.getenv("API_KEY")
+API_BASE_URL = os.getenv("API_BASE_URL")
+API_KEY = os.getenv("API_KEY")
+MODEL_NAME = os.getenv("MODEL_NAME") or "gpt-4o-mini"
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
 ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://127.0.0.1:8000")
@@ -100,10 +99,10 @@ def require_env() -> None:
     missing = []
     if not API_BASE_URL:
         missing.append("API_BASE_URL")
+    if not API_KEY:
+        missing.append("API_KEY")
     if not MODEL_NAME:
         missing.append("MODEL_NAME")
-    if not HF_TOKEN:
-        missing.append("HF_TOKEN")
     if missing:
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
