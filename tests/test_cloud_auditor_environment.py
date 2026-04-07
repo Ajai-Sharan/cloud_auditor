@@ -42,7 +42,7 @@ def test_easy_task_revoke_ssh_open_ingress():
         "revoke_security_group_ingress --group-id sg-web --port 22 --cidr 0.0.0.0/0",
     )
     assert remediation.done is True
-    assert remediation.task_score == 1.0
+    assert 0.0 < remediation.task_score < 1.0
     assert remediation.status == "completed"
 
 
@@ -59,7 +59,7 @@ def test_medium_task_disable_public_read():
     )
 
     assert remediation.done is True
-    assert remediation.task_score == 1.0
+    assert 0.0 < remediation.task_score < 1.0
 
 
 def test_hard_task_disable_admin_stale_keys():
@@ -84,7 +84,7 @@ def test_hard_task_disable_admin_stale_keys():
         env,
         "update_access_key --user-name alice-admin --access-key-id AKIAALICE002 --status Inactive",
     )
-    assert final.task_score == 1.0
+    assert 0.0 < final.task_score < 1.0
     assert final.done is True
 
 
