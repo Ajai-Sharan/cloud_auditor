@@ -116,6 +116,6 @@ The repository includes additional guides for testing, integration, and usage.
 - `AGENT_INTEGRATION_GUIDE.md`: Full agent integration contract with request/response examples and command semantics.
 - `TESTING_QUICK_REFERENCE.md`: Fast testing checklist with common flows, troubleshooting tips, and expected outputs.
 - `README.md`: High-level project overview, architecture, setup, and command reference.
-- `inference.py`: Sample inference runner that uses OpenAI client variables (`API_BASE_URL`, `MODEL_NAME`, `HF_TOKEN`/`API_KEY`) against this environment.
+- `inference.py`: Sample inference runner that uses OpenAI client variables (`API_BASE_URL`, `API_KEY`, `MODEL_NAME`) against this environment.
 
 If you are new to the repo, start with `README.md`, then use `POSTMAN_CURL_COMMANDS.md` for manual API checks.
