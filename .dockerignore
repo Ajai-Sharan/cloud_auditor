@@ -1,0 +1,38 @@
+# VCS metadata
+.git/
+.gitignore
+.gitattributes
+
+# Python caches and virtualenvs
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+ENV/
+
+# Test and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Local logs and temp files
+*.log
+inference_check.log
+checklist_run.log
+checklist_run_2.log
+
+# IDE/editor files
+.vscode/
+.idea/
