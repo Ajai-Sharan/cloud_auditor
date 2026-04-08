@@ -20,6 +20,8 @@ import os
 import re
 import sys
 import inspect
+import subprocess
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -92,6 +94,8 @@ SYSTEM_PROMPT = (
 )
 
 BENCHMARK = os.getenv("BENCHMARK", "cloudsecurityauditor-v1")
+LOCAL_SERVER_HOST = "127.0.0.1"
+LOCAL_SERVER_PORT = int(os.getenv("PORT", "8000"))
 
 
 def emit_start(task: str, env_name: str, model: str) -> None:
@@ -162,6 +166,37 @@ async def create_env_client() -> CloudAuditorEnv:
     if ENV_BASE_URL:
         return CloudAuditorEnv(base_url=ENV_BASE_URL)
     return CloudAuditorEnv(base_url="http://127.0.0.1:8000")
+
+
+def start_local_env_server() -> subprocess.Popen[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "server.app:app",
+        "--host",
+        LOCAL_SERVER_HOST,
+        "--port",
+        str(LOCAL_SERVER_PORT),
+    ]
+    return subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=SCRIPT_DIR, text=True)
+
+
+async def wait_for_local_env_server(timeout_seconds: float = 30.0) -> None:
+    start = time.monotonic()
+    last_error: Exception | None = None
+    while time.monotonic() - start < timeout_seconds:
+        try:
+            probe_env = CloudAuditorEnv(base_url=f"http://{LOCAL_SERVER_HOST}:{LOCAL_SERVER_PORT}")
+            try:
+                await probe_env.close()
+            except Exception:
+                pass
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            await asyncio.sleep(0.5)
+    raise RuntimeError(f"Local environment server did not start on port {LOCAL_SERVER_PORT}: {last_error}")
 
 
 def extract_text_content(content: Any) -> str:
@@ -317,10 +352,14 @@ async def main() -> None:
     last_llm_error: str | None = None
     fatal_error: Exception | None = None
     env: CloudAuditorEnv | None = None
+    server_process: subprocess.Popen[str] | None = None
 
     try:
         require_env()
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+        if not IMAGE_NAME and not ENV_BASE_URL:
+            server_process = start_local_env_server()
+            await wait_for_local_env_server()
         env = await create_env_client()
 
         reset_error: Exception | None = None
@@ -415,6 +454,15 @@ async def main() -> None:
                 await env.close()
             except Exception:
                 pass
+        if server_process is not None and server_process.poll() is None:
+            try:
+                server_process.terminate()
+                server_process.wait(timeout=10)
+            except Exception:
+                try:
+                    server_process.kill()
+                except Exception:
+                    pass
         if not started:
             emit_start(task=task_name, env_name=BENCHMARK, model=MODEL_NAME)
         emit_end(success=success, steps=steps_taken, score=score, rewards=rewards)
