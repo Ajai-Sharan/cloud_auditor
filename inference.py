@@ -78,7 +78,15 @@ def emit_end(task: str, success: bool, steps: int, score: float, rewards: list[f
 def main():
     """Run all tasks in sequence through HTTP environment."""
     # Create OpenAI client for all LLM calls (through proxy)
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    client = None
+    if API_KEY:
+        try:
+            client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+        except Exception as e:
+            print(f"[DEBUG] Failed to initialize OpenAI client: {e}", flush=True)
+    else:
+        print("[DEBUG] Missing API_KEY: inference will emit minimal scores", flush=True)
+    print(f"Using ENV_URL: {ENV_URL}", flush=True)
 
     # Run each task in sequence
     for task_id, difficulty, description in TASKS:
@@ -101,6 +109,7 @@ def main():
 
             obs = reset_data.get("observation", {})
             done = reset_data.get("done", False)
+            successful_completions = 0
 
             # Run episode loop
             for step in range(1, MAX_STEPS + 1):
@@ -109,6 +118,8 @@ def main():
 
                 # Get LLM action through validator's proxy
                 try:
+                    if client is None:
+                        raise RuntimeError("OpenAI client unavailable (missing API_KEY or initialization failed)")
                     completion = client.chat.completions.create(
                         model=MODEL_NAME,
                         messages=[
@@ -120,10 +131,10 @@ def main():
                     )
                     action = completion.choices[0].message.content.strip()
                 except Exception as e:
-                    # Fallback action if LLM fails
-                    action = "describe_instances"
                     emit_step(step, "ERROR", 0.0, False, str(e)[:100])
-                    continue
+                    break
+
+                successful_completions += 1
 
                 # Execute action in environment
                 try:
@@ -159,6 +170,11 @@ def main():
                 success = obs.get("done", False)
             else:
                 task_score = 0.0
+                success = False
+
+            if successful_completions == 0:
+                print(f"[DEBUG] {task_id} failed: no successful chat completions", flush=True)
+                task_score = SCORE_MIN
                 success = False
 
             # Clamp score to (SCORE_MIN, SCORE_MAX)
