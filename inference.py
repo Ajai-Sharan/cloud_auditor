@@ -13,22 +13,50 @@ local CloudSecurityAuditor HTTP API.
 from __future__ import annotations
 
 import json
+import importlib
+import importlib.util
 import os
 import re
 import sys
 from dataclasses import dataclass
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 from openai import OpenAI
 
-IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
-API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PARENT_DIR = os.path.dirname(SCRIPT_DIR)
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
 
-ENV_BASE_URL = os.getenv("ENV_BASE_URL") or os.getenv("ENV_URL") or "http://127.0.0.1:8000"
+
+def _load_cloud_auditor_module() -> Any:
+    try:
+        return importlib.import_module("cloud_auditor")
+    except Exception:
+        init_path = os.path.join(SCRIPT_DIR, "__init__.py")
+        spec = importlib.util.spec_from_file_location(
+            "cloud_auditor",
+            init_path,
+            submodule_search_locations=[SCRIPT_DIR],
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("Unable to load cloud_auditor package for inference execution")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["cloud_auditor"] = module
+        spec.loader.exec_module(module)
+        return module
+
+
+_cloud_auditor = _load_cloud_auditor_module()
+CloudAuditorAction = _cloud_auditor.CloudAuditorAction
+CloudAuditorEnv = _cloud_auditor.CloudAuditorEnv
+
+IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+API_KEY = os.getenv("API_KEY")
+API_BASE_URL = os.getenv("API_BASE_URL")
+MODEL_NAME = os.getenv("MODEL_NAME")
+
+ENV_BASE_URL = os.getenv("ENV_BASE_URL") or os.getenv("ENV_URL")
 MAX_STEPS = int(os.getenv("MAX_STEPS", "8"))
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "140"))
@@ -109,36 +137,28 @@ def require_env() -> None:
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
 
-def http_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
-    url = f"{ENV_BASE_URL.rstrip('/')}{path}"
-    req = Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urlopen(req, timeout=30) as res:
-            return json.loads(res.read().decode("utf-8"))
-    except HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"HTTP {exc.code} calling {url}: {body}") from exc
-    except URLError as exc:
-        raise RuntimeError(f"Failed to reach {url}: {exc}") from exc
-
-
-def to_step_response(raw: dict[str, Any]) -> StepResponse:
-    obs = raw.get("observation", {})
+def to_step_response(result: Any) -> StepResponse:
+    obs = result.observation
     return StepResponse(
-        task_id=str(obs.get("task_id", "")),
-        task_description=str(obs.get("task_description", "")),
-        command_output=str(obs.get("command_output", "")),
-        task_score=float(obs.get("task_score", 0.0)),
-        steps_remaining=int(obs.get("steps_remaining", 0)),
-        status=str(obs.get("status", "running")),
-        reward=float(raw.get("reward", 0.0) or 0.0),
-        done=bool(raw.get("done", False)),
+        task_id=str(obs.task_id),
+        task_description=str(obs.task_description),
+        command_output=str(obs.command_output),
+        task_score=float(obs.task_score),
+        steps_remaining=int(obs.steps_remaining),
+        status=str(obs.status),
+        reward=float(result.reward or 0.0),
+        done=bool(result.done),
     )
+
+
+def create_env_client() -> CloudAuditorEnv:
+    # Match reference behavior: prefer docker-image startup when provided,
+    # so inference doesn't depend on a pre-running localhost server.
+    if IMAGE_NAME:
+        return CloudAuditorEnv.from_docker_image(IMAGE_NAME)
+    if ENV_BASE_URL:
+        return CloudAuditorEnv(base_url=ENV_BASE_URL)
+    return CloudAuditorEnv(base_url="http://127.0.0.1:8000")
 
 
 def extract_text_content(content: Any) -> str:
@@ -293,17 +313,19 @@ def main() -> None:
     llm_attempts = 0
     last_llm_error: str | None = None
     fatal_error: Exception | None = None
+    env: CloudAuditorEnv | None = None
 
     try:
         require_env()
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+        env = create_env_client()
 
         reset_error: Exception | None = None
         result: StepResponse | None = None
         for attempt in range(1, RESET_RETRIES + 1):
             try:
-                reset_raw = http_post("/reset", {})
-                result = to_step_response(reset_raw)
+                reset_result = env.reset()
+                result = to_step_response(reset_result)
                 task_name = result.task_id or task_name
                 emit_start(task=task_name, env_name=BENCHMARK, model=MODEL_NAME)
                 started = True
@@ -356,8 +378,8 @@ def main() -> None:
             if not command or command == FALLBACK_ACTION:
                 command = fallback_policy(result.task_id, step_num)
 
-            step_raw = http_post("/step", {"action": {"command": command}})
-            result = to_step_response(step_raw)
+            step_result = env.step(CloudAuditorAction(command=command))
+            result = to_step_response(step_result)
 
             reward = result.reward
             error = extract_last_action_error(result.command_output)
@@ -385,6 +407,11 @@ def main() -> None:
         fatal_error = exc
         print(f"Fatal: {exc}", file=sys.stderr, flush=True)
     finally:
+        if env is not None:
+            try:
+                env.close()
+            except Exception:
+                pass
         if not started:
             emit_start(task=task_name, env_name=BENCHMARK, model=MODEL_NAME)
         emit_end(success=success, steps=steps_taken, score=score, rewards=rewards)
