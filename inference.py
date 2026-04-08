@@ -133,8 +133,6 @@ def require_env() -> None:
         missing.append("API_BASE_URL")
     if not API_KEY:
         missing.append("API_KEY")
-    if not MODEL_NAME:
-        missing.append("MODEL_NAME")
     if missing:
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
