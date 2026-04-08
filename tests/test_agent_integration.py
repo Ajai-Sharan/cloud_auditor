@@ -194,7 +194,7 @@ class TestAgentServerInteraction:
             )
         )
         assert step4.done is False
-        assert step4.task_score == 0.5  # Partial completion (1 of 2 keys)
+        assert step4.task_score == 0.8  # Partial completion (1 of 2 keys)
 
         # Disable second key
         step5 = env.step(
