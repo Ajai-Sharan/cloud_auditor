@@ -12,12 +12,14 @@ local CloudSecurityAuditor HTTP API.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import importlib
 import importlib.util
 import os
 import re
 import sys
+import inspect
 from dataclasses import dataclass
 from typing import Any
 
@@ -151,11 +153,14 @@ def to_step_response(result: Any) -> StepResponse:
     )
 
 
-def create_env_client() -> CloudAuditorEnv:
+async def create_env_client() -> CloudAuditorEnv:
     # Match reference behavior: prefer docker-image startup when provided,
     # so inference doesn't depend on a pre-running localhost server.
     if IMAGE_NAME:
-        return CloudAuditorEnv.from_docker_image(IMAGE_NAME)
+        env_or_awaitable = CloudAuditorEnv.from_docker_image(IMAGE_NAME)
+        if inspect.isawaitable(env_or_awaitable):
+            return await env_or_awaitable
+        return env_or_awaitable
     if ENV_BASE_URL:
         return CloudAuditorEnv(base_url=ENV_BASE_URL)
     return CloudAuditorEnv(base_url="http://127.0.0.1:8000")
@@ -301,7 +306,7 @@ def extract_last_action_error(command_output: str) -> str | None:
     return None
 
 
-def main() -> None:
+async def main() -> None:
     task_name = os.getenv("TASK_NAME", "unknown")
     history: list[str] = []
     rewards: list[float] = []
@@ -318,13 +323,13 @@ def main() -> None:
     try:
         require_env()
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-        env = create_env_client()
+        env = await create_env_client()
 
         reset_error: Exception | None = None
         result: StepResponse | None = None
         for attempt in range(1, RESET_RETRIES + 1):
             try:
-                reset_result = env.reset()
+                reset_result = await env.reset()
                 result = to_step_response(reset_result)
                 task_name = result.task_id or task_name
                 emit_start(task=task_name, env_name=BENCHMARK, model=MODEL_NAME)
@@ -378,7 +383,7 @@ def main() -> None:
             if not command or command == FALLBACK_ACTION:
                 command = fallback_policy(result.task_id, step_num)
 
-            step_result = env.step(CloudAuditorAction(command=command))
+            step_result = await env.step(CloudAuditorAction(command=command))
             result = to_step_response(step_result)
 
             reward = result.reward
@@ -409,7 +414,7 @@ def main() -> None:
     finally:
         if env is not None:
             try:
-                env.close()
+                await env.close()
             except Exception:
                 pass
         if not started:
@@ -421,4 +426,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
