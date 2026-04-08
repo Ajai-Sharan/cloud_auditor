@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
+SCORE_MIN = 0.001  # Strictly > 0
+SCORE_MAX = 0.999  # Strictly < 1
+
 
 def _extract_score(observation: Any, *args: Any, **kwargs: Any) -> float:
     # Accept both dict and object observations used by different runners.
@@ -27,12 +30,8 @@ def _extract_score(observation: Any, *args: Any, **kwargs: Any) -> float:
     if score is None:
         score = 0.0
 
-    # Validator requires strictly interior scores.
-    if score <= 0.0:
-        return 0.01
-    if score >= 1.0:
-        return 0.99
-    return score
+    # Validator requires strictly interior scores: 0 < score < 1
+    return max(SCORE_MIN, min(SCORE_MAX, score))
 
 
 class EasyGrader:
