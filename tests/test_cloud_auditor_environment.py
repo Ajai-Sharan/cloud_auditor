@@ -77,7 +77,7 @@ def test_hard_task_disable_admin_stale_keys():
         env,
         "update_access_key --user-name alice-admin --access-key-id AKIAALICE001 --status Inactive",
     )
-    assert partial.task_score == 0.5
+    assert partial.task_score == 0.8
     assert partial.done is False
 
     final = _cmd(
@@ -128,3 +128,51 @@ def test_episode_ends_after_max_steps_even_if_incomplete():
     assert last is not None
     assert last.done is True
     assert last.status == "failed"
+
+
+def test_easy_task_milestones_are_monotonic():
+    env = CloudAuditorEnvironment()
+    env.reset()
+
+    step_a = _cmd(env, "describe_instances")
+    step_b = _cmd(env, "describe_security_groups --group-id sg-web")
+    step_c = _cmd(
+        env,
+        "revoke_security_group_ingress --group-id sg-web --port 22 --cidr 0.0.0.0/0",
+    )
+
+    assert step_b.task_score > step_a.task_score
+    assert step_c.task_score > step_b.task_score
+
+
+def test_score_does_not_decrease_after_completion():
+    env = CloudAuditorEnvironment()
+    env.reset()
+
+    _cmd(
+        env,
+        "revoke_security_group_ingress --group-id sg-web --port 22 --cidr 0.0.0.0/0",
+    )
+    after_fix = _cmd(env, "describe_instances")
+
+    assert after_fix.task_score >= 0.95
+
+
+def test_reset_observation_includes_expected_task_description():
+    env = CloudAuditorEnvironment()
+    obs = env.reset()
+
+    expected = CloudAuditorEnvironment.TASK_SPECS[obs.task_id]["description"]
+    assert obs.task_description == expected
+    assert expected
+
+
+def test_repeated_recon_does_not_farm_bonus():
+    env = CloudAuditorEnvironment()
+    env.reset()
+
+    first = _cmd(env, "describe_instances")
+    second = _cmd(env, "describe_instances")
+
+    assert first.reward > 0.0
+    assert second.reward <= 0.0
