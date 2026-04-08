@@ -6,9 +6,12 @@ app: server.app:app
 port: 8000
 tasks:
   - id: task_easy_ssh
-    grader: server.graders:EasyGrader
+    grader:
+      type: server.graders:EasyGrader
   - id: task_medium_s3
-    grader: server.graders:MediumGrader
+    grader:
+      type: server.graders:MediumGrader
   - id: task_hard_iam
-    grader: server.graders:HardGrader
+    grader:
+      type: server.graders:HardGrader
 
