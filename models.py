@@ -6,8 +6,20 @@
 
 """Data models for the CloudSecurityAuditor-v1 OpenEnv environment."""
 
-from openenv.core.env_server.types import Action, Observation
-from pydantic import Field
+from pydantic import BaseModel, Field
+
+try:
+    from openenv.core.env_server.types import Action, Observation
+except ModuleNotFoundError:  # pragma: no cover
+    class Action(BaseModel):
+        """Fallback action base when openenv is not installed."""
+
+    class Observation(BaseModel):
+        """Fallback observation base when openenv is not installed."""
+
+        reward: float = 0.0
+        done: bool = False
+        metadata: dict = Field(default_factory=dict)
 
 
 class CloudAuditorAction(Action):
