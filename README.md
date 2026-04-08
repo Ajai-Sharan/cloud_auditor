@@ -14,7 +14,7 @@ tags:
   - security
   - devsecops
 
-A simple test environment that echoes back messages. Perfect for testing the env APIs as well as demonstrating environment usage patterns.
+A deterministic cloud security simulation for evaluating agent investigation and remediation behavior.
 # CloudSecurityAuditor-v1
 
 CloudSecurityAuditor-v1 is a production-style OpenEnv simulation where an AI agent acts as a DevSecOps engineer, audits cloud assets, and remediates security issues via a deterministic in-memory CLI.
@@ -38,6 +38,8 @@ Reset rotates deterministically through tasks in this order:
 2. `task_medium_s3`
 3. `task_hard_iam`
 
+Task descriptions are always returned in `reset` observations via `task_description`, so an agent can infer objectives from observation payloads without reading repository files.
+
 ## Reward Design
 
 - Dense reward shaping with command-level progress milestones.
@@ -45,6 +47,19 @@ Reset rotates deterministically through tasks in this order:
 - Mild per-step penalty for efficiency pressure.
 - Additional penalties for malformed or unrecognized commands.
 - Episode termination at `MAX_STEPS=15` or task completion.
+
+See `GRADER_WALKTHROUGH.md` for explicit score progression examples, milestone semantics, and why task weight schemas differ by difficulty.
+
+## Baseline Transparency
+
+`BASELINE_RESULTS.md` is the canonical place for per-task baseline metrics.
+
+- Baseline runner: `python inference.py > baseline_cloud_auditor.txt`
+- Inference defaults to local execution when `ENV_URL` is unset:
+  - `ENV_URL = http://localhost:8000`
+- Inference prints active URL at startup for reproducibility:
+  - `Using ENV_URL: ...`
+- No hidden command fallback is used when LLM completion fails; failures are surfaced in logs.
 
 ## Simulated CLI Commands
 
@@ -82,6 +97,23 @@ uv sync
 uvicorn server.app:app --reload --host 0.0.0.0 --port 8000
 ```
 
+## Phase 2 Proxy Validation (Local)
+
+Use the injected proxy settings and run the local validator before every submission.
+
+```bash
+export API_KEY="your_token"
+export API_BASE_URL="https://<provided-proxy-base-url>"
+export MODEL_NAME="<provided-model-name>"
+export ENV_URL="http://127.0.0.1:8000"
+python local_validator.py
+```
+
+Notes:
+- `inference.py` requires `API_BASE_URL`, `API_KEY`, and `MODEL_NAME`.
+- If no successful LLM call is made, `inference.py` exits non-zero so proxy bypass issues are caught locally.
+- `ENV_URL` and `ENV_BASE_URL` are both supported for environment server URL.
+
 ## Build Docker Image
 
 ```bash
@@ -115,6 +147,8 @@ The repository includes additional guides for testing, integration, and usage.
 - `POSTMAN_CURL_COMMANDS.md`: Postman-ready request bodies and cURL commands for `/reset` and `/step`, including task walkthroughs and error cases.
 - `AGENT_INTEGRATION_GUIDE.md`: Full agent integration contract with request/response examples and command semantics.
 - `TESTING_QUICK_REFERENCE.md`: Fast testing checklist with common flows, troubleshooting tips, and expected outputs.
+- `GRADER_WALKTHROUGH.md`: Step-by-step grading walkthroughs, milestone rules, and score progression transparency.
+- `BASELINE_RESULTS.md`: Published baseline run matrix (task score, steps, success, mean score).
 - `README.md`: High-level project overview, architecture, setup, and command reference.
 - `inference.py`: Sample inference runner that uses OpenAI client variables (`API_BASE_URL`, `API_KEY`, `MODEL_NAME`) against this environment.
 
