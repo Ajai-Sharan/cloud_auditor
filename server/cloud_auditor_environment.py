@@ -16,9 +16,20 @@ from __future__ import annotations
 import copy
 import json
 import shlex
+import threading
+from dataclasses import dataclass
 
-from openenv.core.env_server.interfaces import Environment
-from openenv.core.env_server.types import State
+try:
+    from openenv.core.env_server.interfaces import Environment
+    from openenv.core.env_server.types import State
+except ModuleNotFoundError:  # pragma: no cover
+    class Environment:
+        """Fallback base when openenv is unavailable in local test environments."""
+
+    @dataclass
+    class State:
+        episode_id: str
+        step_count: int
 
 try:
     from ..models import CloudAuditorAction, CloudAuditorObservation
@@ -40,6 +51,7 @@ class CloudAuditorEnvironment(Environment):
     # POST /reset calls still cycle tasks deterministically.
     USE_GLOBAL_TASK_ROTATION: bool = False
     _GLOBAL_RESET_COUNT: int = 0
+    _GLOBAL_LOCK = threading.Lock()
     USE_GLOBAL_HTTP_STATE: bool = False
     AUTO_RECOVER_EMPTY_COMMAND: bool = False
     _GLOBAL_TASK_ID: str = "task_easy_ssh"
@@ -118,8 +130,7 @@ class CloudAuditorEnvironment(Environment):
     def reset(self) -> CloudAuditorObservation:
         """Reset episode state and rotate deterministically through 3 tasks."""
         if self.USE_GLOBAL_TASK_ROTATION:
-            type(self)._GLOBAL_RESET_COUNT += 1
-            reset_count = type(self)._GLOBAL_RESET_COUNT
+            reset_count = self._next_global_reset_count()
         else:
             self._reset_count += 1
             reset_count = self._reset_count
@@ -131,7 +142,8 @@ class CloudAuditorEnvironment(Environment):
         self._progress_flags = set()
         self._state = State(episode_id=f"episode-{reset_count}", step_count=0)
         if self.USE_GLOBAL_HTTP_STATE:
-            self._save_to_global_state()
+            with type(self)._GLOBAL_LOCK:
+                self._save_to_global_state()
 
         return self._build_observation(
             command_output=(
@@ -145,8 +157,16 @@ class CloudAuditorEnvironment(Environment):
     def step(self, action: CloudAuditorAction) -> CloudAuditorObservation:  # type: ignore[override]
         """Execute a simulated CLI command with shaped reward and deterministic grading."""
         if self.USE_GLOBAL_HTTP_STATE:
-            self._load_from_global_state()
+            with type(self)._GLOBAL_LOCK:
+                self._load_from_global_state()
+                observation = self._step_internal(action)
+                self._save_to_global_state()
+                return observation
 
+        return self._step_internal(action)
+
+    def _step_internal(self, action: CloudAuditorAction) -> CloudAuditorObservation:
+        """Execute one environment step against the currently loaded state."""
         prev_score = self._grade_current_task()
         self._state.step_count += 1
 
@@ -183,9 +203,13 @@ class CloudAuditorEnvironment(Environment):
             reward -= 0.03
             command_output = f"Error: {err}"
         observation = self._finalize_step(prev_score, reward, command_output)
-        if self.USE_GLOBAL_HTTP_STATE:
-            self._save_to_global_state()
         return observation
+
+    @classmethod
+    def _next_global_reset_count(cls) -> int:
+        with cls._GLOBAL_LOCK:
+            cls._GLOBAL_RESET_COUNT += 1
+            return cls._GLOBAL_RESET_COUNT
 
     @property
     def state(self) -> State:
@@ -571,7 +595,10 @@ class CloudAuditorEnvironment(Environment):
     def _required_arg(args: dict[str, str], key: str) -> str:
         if key not in args:
             raise ValueError(f"missing required option --{key}")
-        return args[key]
+        value = args[key]
+        if value is None or value.strip() == "":
+            raise ValueError(f"option --{key} cannot be empty")
+        return value
 
     def _get_bucket(self, bucket_name: str) -> dict | None:
         for bucket in self._world_state["s3_buckets"]:
